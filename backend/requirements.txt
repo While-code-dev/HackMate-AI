@@ -7,3 +7,5 @@ langchain-google-genai
 pwdlib[argon2]
 PyJWT
 pydantic
+httpx
+pytest

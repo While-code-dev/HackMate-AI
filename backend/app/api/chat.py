@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import Conversation, Message, User
-from app.agent_core.orchestrator import MasterOrchestrator
 
 
 router = APIRouter(
@@ -13,7 +12,16 @@ router = APIRouter(
     tags=["Chat"]
 )
 
-orchestrator = MasterOrchestrator()
+# Lazy import so missing API key doesn't crash startup
+_orchestrator = None
+
+
+def get_orchestrator():
+    global _orchestrator
+    if _orchestrator is None:
+        from app.agent_core.orchestrator import MasterOrchestrator
+        _orchestrator = MasterOrchestrator()
+    return _orchestrator
 
 
 class ChatRequest(BaseModel):
@@ -101,10 +109,21 @@ def chat(
     # 4. Send conversation history to AI
     # -------------------------------------------------
 
-    result = orchestrator.process_message(
-        user_message=request.user_message,
-        history=chat_history
-    )
+    try:
+        orchestrator = get_orchestrator()
+        result = orchestrator.process_message(
+            user_message=request.user_message,
+            history=chat_history
+        )
+    except Exception as exc:
+        result = {
+            "chat_reply": (
+                "I'm having trouble connecting to the AI service. "
+                "Please check your API key configuration."
+            ),
+            "is_ready_for_spec": False,
+            "project_spec": None,
+        }
 
 
     # -------------------------------------------------

@@ -8,6 +8,7 @@ from app.auth import (
     hash_password,
     verify_password,
     create_access_token,
+    get_current_user,
 )
 
 
@@ -105,4 +106,14 @@ def login(
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": user.id
+    }
+
+
+@router.get("/me")
+def me(current_user: User = Depends(get_current_user)):
+    """Return the currently authenticated user."""
+    return {
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "created_at": current_user.created_at,
     }

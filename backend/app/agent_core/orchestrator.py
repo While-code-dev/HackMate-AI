@@ -26,19 +26,19 @@ load_dotenv(dotenv_path=env_path)
 
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-if not api_key:
-    raise ValueError(
-        f"Gemini API key not found. Check your .env file at: {env_path}"
-    )
-
 
 # --------------------------------------------------
-# Master Orchestrator
+# Master Orchestrator (legacy — kept for backward compat)
 # --------------------------------------------------
 
 class MasterOrchestrator:
 
     def __init__(self):
+
+        if not api_key:
+            raise ValueError(
+                f"Gemini API key not found. Check your .env file at: {env_path}"
+            )
 
         self.llm = ChatGoogleGenerativeAI(
             model="gemini-3.6-flash",
@@ -97,9 +97,15 @@ class MasterOrchestrator:
             )
 
             response = self.llm.invoke(prompt)
+            content = response.content
+            if isinstance(content, list):
+                content = "".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                )
 
             return {
-                "chat_reply": response.content,
+                "chat_reply": content,
                 "is_ready_for_spec": False,
                 "project_spec": None,
             }

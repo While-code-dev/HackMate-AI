@@ -20,10 +20,7 @@ load_dotenv(dotenv_path=env_path)
 # Get Gemini API key
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-if not api_key:
-    raise ValueError(
-        f"API Key not found! Check .env file at {env_path}"
-    )
+# api_key may be None if .env is not set; agents will raise at call time
 
 
 def extract_profile_agent(history: list) -> ExtractedStudentProfile:
