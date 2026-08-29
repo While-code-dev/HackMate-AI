@@ -3,14 +3,14 @@ stages.py
 ---------
 FastAPI routes for Hackathon Stage interactions.
 
-POST /api/projects/{id}/stages/{stage}/chat     — Send message to the stage agent
-GET  /api/projects/{id}/stages/{stage}          — Get stage data (history + outputs)
-POST /api/projects/{id}/stages/{stage}/complete — Mark stage as completed + advance
+POST /api/projects/{id}/stages/{stage}/chat
+GET /api/projects/{id}/stages/{stage}
+POST /api/projects/{id}/stages/{stage}/complete
 """
 
 import json
+import logging
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,27 +27,21 @@ from app.agent_core.hackathon_orchestrator import (
     get_next_stage,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/api/projects",
     tags=["Stages"],
 )
 
 
-# =========================================================
-# Schemas
-# =========================================================
-
 class StageChatRequest(BaseModel):
     message: str
 
 
 class StageCompleteRequest(BaseModel):
-    advance: bool = True  # Whether to move to the next stage
+    advance: bool = True
 
-
-# =========================================================
-# Helpers
-# =========================================================
 
 def _get_project_or_404(
     project_id: int,
@@ -62,8 +56,13 @@ def _get_project_or_404(
         )
         .first()
     )
+
     if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
     return project
 
 
@@ -89,16 +88,13 @@ def _get_or_create_stage(
             chat_history=json.dumps([]),
             ai_outputs=json.dumps({}),
         )
+
         db.add(stage_row)
         db.commit()
         db.refresh(stage_row)
 
     return stage_row
 
-
-# =========================================================
-# Routes
-# =========================================================
 
 @router.post("/{project_id}/stages/{stage}/chat")
 def stage_chat(
@@ -108,36 +104,42 @@ def stage_chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Send a message to the specialized agent for this stage."""
-
     if stage not in STAGE_ORDER:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}"
+            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}",
         )
 
-    project = _get_project_or_404(project_id, current_user.id, db)
+    project = _get_project_or_404(
+        project_id,
+        current_user.id,
+        db,
+    )
 
-    # Load all stage data for context building
     all_stages = (
         db.query(StageData)
         .filter(StageData.project_id == project_id)
         .all()
     )
 
-    # Build unified project context
-    project_ctx = build_project_context(project, all_stages)
+    project_ctx = build_project_context(
+        project,
+        all_stages,
+    )
 
-    # Get or create this stage's row
-    stage_row = _get_or_create_stage(project_id, stage, db)
+    stage_row = _get_or_create_stage(
+        project_id,
+        stage,
+        db,
+    )
 
-    # Load chat history
     try:
-        chat_history = json.loads(stage_row.chat_history or "[]")
+        chat_history = json.loads(
+            stage_row.chat_history or "[]"
+        )
     except json.JSONDecodeError:
         chat_history = []
 
-    # Invoke the specialized agent
     try:
         ai_response = route_to_agent(
             stage=stage,
@@ -146,41 +148,71 @@ def stage_chat(
             chat_history=chat_history,
         )
     except Exception as exc:
-        # Never crash the endpoint on AI errors
-        ai_response = (
-            "I apologize — I encountered an error processing your request. "
-            f"Please try again. (Error: {type(exc).__name__})"
+        logger.exception(
+            "AI agent failed for project_id=%s stage=%s",
+            project_id,
+            stage,
         )
 
-    # Append to chat history
-    chat_history.append({"role": "user", "content": request.message})
-    chat_history.append({"role": "assistant", "content": ai_response})
+        error_message = str(exc).strip()
 
-    # Save last AI response in ai_outputs
+        if not error_message:
+            error_message = "Unknown AI processing error."
+
+        ai_response = (
+            "I encountered an error while processing your request. "
+            f"Technical details: {error_message}"
+        )
+
+    chat_history.append(
+        {
+            "role": "user",
+            "content": request.message,
+        }
+    )
+
+    chat_history.append(
+        {
+            "role": "assistant",
+            "content": ai_response,
+        }
+    )
+
     try:
-        ai_outputs = json.loads(stage_row.ai_outputs or "{}")
+        ai_outputs = json.loads(
+            stage_row.ai_outputs or "{}"
+        )
     except json.JSONDecodeError:
         ai_outputs = {}
 
     ai_outputs["last_response"] = ai_response
     ai_outputs["last_updated"] = datetime.utcnow().isoformat()
 
-    # Update stage row
-    stage_row.chat_history = json.dumps(chat_history)
-    stage_row.ai_outputs = json.dumps(ai_outputs)
+    stage_row.chat_history = json.dumps(
+        chat_history
+    )
+
+    stage_row.ai_outputs = json.dumps(
+        ai_outputs
+    )
+
     stage_row.status = "in_progress"
     stage_row.updated_at = datetime.utcnow()
 
     db.commit()
 
-    # Recalculate progress
     all_stages_refreshed = (
         db.query(StageData)
         .filter(StageData.project_id == project_id)
         .all()
     )
-    project.progress = calculate_progress(all_stages_refreshed)
+
+    project.progress = calculate_progress(
+        all_stages_refreshed
+    )
+
     project.updated_at = datetime.utcnow()
+
     db.commit()
 
     return {
@@ -198,15 +230,17 @@ def get_stage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get the stage data including chat history and AI outputs."""
-
     if stage not in STAGE_ORDER:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}"
+            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}",
         )
 
-    project = _get_project_or_404(project_id, current_user.id, db)
+    project = _get_project_or_404(
+        project_id,
+        current_user.id,
+        db,
+    )
 
     stage_row = (
         db.query(StageData)
@@ -227,12 +261,16 @@ def get_stage(
         }
 
     try:
-        chat_history = json.loads(stage_row.chat_history or "[]")
+        chat_history = json.loads(
+            stage_row.chat_history or "[]"
+        )
     except json.JSONDecodeError:
         chat_history = []
 
     try:
-        ai_outputs = json.loads(stage_row.ai_outputs or "{}")
+        ai_outputs = json.loads(
+            stage_row.ai_outputs or "{}"
+        )
     except json.JSONDecodeError:
         ai_outputs = {}
 
@@ -254,34 +292,45 @@ def complete_stage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Mark a stage as completed and optionally advance to the next stage."""
-
     if stage not in STAGE_ORDER:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}"
+            detail=f"Invalid stage. Must be one of: {STAGE_ORDER}",
         )
 
-    project = _get_project_or_404(project_id, current_user.id, db)
+    project = _get_project_or_404(
+        project_id,
+        current_user.id,
+        db,
+    )
 
-    stage_row = _get_or_create_stage(project_id, stage, db)
+    stage_row = _get_or_create_stage(
+        project_id,
+        stage,
+        db,
+    )
+
     stage_row.status = "completed"
     stage_row.updated_at = datetime.utcnow()
 
-    # Advance to next stage if requested
     next_stage = None
+
     if request.advance:
         next_stage = get_next_stage(stage)
+
         if next_stage:
             project.current_stage = next_stage
 
-    # Recalculate progress
     all_stages = (
         db.query(StageData)
         .filter(StageData.project_id == project_id)
         .all()
     )
-    project.progress = calculate_progress(all_stages)
+
+    project.progress = calculate_progress(
+        all_stages
+    )
+
     project.updated_at = datetime.utcnow()
 
     db.commit()
@@ -291,6 +340,10 @@ def complete_stage(
         "stage_label": STAGE_LABELS.get(stage, stage),
         "status": "completed",
         "next_stage": next_stage,
-        "next_stage_label": STAGE_LABELS.get(next_stage, next_stage) if next_stage else None,
+        "next_stage_label": (
+            STAGE_LABELS.get(next_stage, next_stage)
+            if next_stage
+            else None
+        ),
         "project_progress": project.progress,
     }
