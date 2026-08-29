@@ -1,93 +1,158 @@
-"""
-hackathon_agents.py
--------------------
-Ten specialized AI agents for the HackMate hackathon copilot.
-
-Each agent receives a project context dict and a user message string,
-and returns a plain-text AI response. They share no state — the
-orchestrator is responsible for building context and routing.
-"""
-
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-# Load .env
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(dotenv_path=BASE_DIR / ".env")
-
-api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+from langchain_groq import ChatGroq
 
 
-def _llm(timeout: int = 90) -> ChatGoogleGenerativeAI:
-    """Create a fresh LLM instance (intentional per-call pattern)."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-3.6-flash",
-        google_api_key=api_key,
+BASE_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BASE_DIR / ".env"
+
+load_dotenv(dotenv_path=ENV_FILE)
+
+api_key = os.getenv("GROQ_API_KEY")
+
+
+def _llm(timeout: int = 90) -> ChatGroq:
+    current_api_key = os.getenv("GROQ_API_KEY") or api_key
+
+    if not current_api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY is not configured. "
+            "Make sure GROQ_API_KEY exists in backend/.env "
+            "or in the deployment environment variables."
+        )
+
+    return ChatGroq(
+        model="openai/gpt-oss-20b",
+        api_key=current_api_key,
+        temperature=0.7,
         timeout=timeout,
     )
 
 
 def _invoke(prompt: str, timeout: int = 90) -> str:
-    """Invoke the LLM and return a plain string, handling list content from newer SDK."""
     result = _llm(timeout).invoke(prompt)
     content = result.content
+
     if isinstance(content, list):
-        # langchain_google_genai >= 4.x returns list of content blocks
         parts = []
+
         for block in content:
             if isinstance(block, dict):
                 parts.append(block.get("text", ""))
             else:
                 parts.append(str(block))
+
         return "".join(parts)
+
     return str(content)
 
 
 def _project_context_block(ctx: dict) -> str:
-    """Format a project context dict into a readable block for prompts."""
     lines = []
+
     if ctx.get("project_name"):
         lines.append(f"Project Name: {ctx['project_name']}")
+
     if ctx.get("hackathon_name"):
         lines.append(f"Hackathon: {ctx['hackathon_name']}")
+
     if ctx.get("theme"):
         lines.append(f"Theme/Problem Area: {ctx['theme']}")
+
     if ctx.get("interests"):
         lines.append(f"Interests: {ctx['interests']}")
+
     if ctx.get("skills"):
         lines.append(f"Skills: {ctx['skills']}")
+
     if ctx.get("team_info"):
         lines.append(f"Team Info: {ctx['team_info']}")
+
     if ctx.get("constraints"):
         lines.append(f"Constraints: {ctx['constraints']}")
+
     if ctx.get("stage_outputs"):
         for stage, output in ctx["stage_outputs"].items():
             if output:
                 lines.append(f"\n[{stage.upper()} OUTPUT]:\n{output}")
+
     return "\n".join(lines) if lines else "(No project context yet)"
 
 
 def _chat_history_block(history: list) -> str:
     if not history:
         return ""
+
     parts = []
-    for msg in history[-10:]:  # Last 10 messages for context
+
+    for msg in history[-15:]:
         role = "User" if msg.get("role") == "user" else "Assistant"
         parts.append(f"{role}: {msg.get('content', '')}")
+
     return "\n".join(parts)
 
 
-# =========================================================
-# AGENT 1 — Problem Discovery Agent
-# =========================================================
+def _conversation_instructions() -> str:
+    return """
+You are a highly capable conversational AI assistant.
 
-def problem_discovery_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Problem Discovery Agent for HackMate AI — an AI-powered hackathon copilot.
+Respond naturally and dynamically to the user's actual message.
 
-Your role: Help the user discover meaningful, impactful problems they can solve at a hackathon.
+Do not behave like a form, questionnaire, fixed-response generator, or scripted chatbot.
+
+Do not force every answer into a predefined structure.
+
+Do not always use headings, numbered lists, tables, or a fixed number of items.
+
+If the user asks a simple question, give a simple answer.
+
+If the user asks for detailed analysis, provide detailed analysis.
+
+If the user wants brainstorming, brainstorm freely.
+
+If the user asks a follow-up question, directly continue the previous discussion.
+
+Use the conversation history and project context to maintain continuity.
+
+Do not repeatedly ask for information that is already available.
+
+Ask a follow-up question only when it is genuinely useful.
+
+Explain difficult concepts clearly when needed.
+
+Give examples when they improve understanding.
+
+Challenge weak assumptions respectfully.
+
+Suggest better alternatives when appropriate.
+
+Adapt your response length and style to the user's request.
+
+Never imply that your capabilities are limited to the examples mentioned in your instructions.
+
+You may answer questions outside the narrow examples listed in your role description when they are relevant to the user's project or conversation.
+
+Your specialized role determines your expertise, not a fixed response format.
+
+Be practical, accurate, creative, and honest.
+"""
+
+
+def problem_discovery_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Problem Discovery Agent inside HackMate AI.
+
+Your specialty is hackathon problem discovery, innovation, user pain points, opportunity discovery, problem framing, and evaluating whether an idea is worth solving.
+
+{_conversation_instructions()}
+
+You can help the user discover meaningful real-world problems, understand users and their pain points, evaluate ideas, brainstorm opportunities, refine vague ideas, challenge assumptions, compare problem areas, and turn observations into strong hackathon problems.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -95,31 +160,29 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Analyze the user's interests, skills, and hackathon theme to surface real-world problems
-- Generate 3-5 candidate problem statements if the user asks for ideas
-- Help the user select the most impactful and feasible problem
-- Ask clarifying questions about: target users, pain points, hackathon constraints
-- Be specific and concrete — avoid generic problems
-- Format problem statements as: "How might we [action] for [user] so that [outcome]?"
-- Keep responses focused and actionable for a hackathon timeframe
-
-If the user has already provided context, use it. Don't re-ask for information already known.
-Respond in a friendly, encouraging tone appropriate for student hackathon participants.
+Use all relevant context and respond directly to the user's message.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 2 — Problem Validation Agent
-# =========================================================
+def problem_validation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Problem Validation Agent inside HackMate AI.
 
-def problem_validation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Problem Validation Agent for HackMate AI.
+Your specialty is validating hackathon problems, assumptions, target users, pain points, feasibility, risks, scope, and evidence that a problem is worth solving.
 
-Your role: Validate whether the selected problem is meaningful, realistic and worth solving at a hackathon.
+{_conversation_instructions()}
+
+You can analyze whether a problem is meaningful, identify weaknesses, challenge assumptions, assess feasibility, identify risks, suggest validation methods, improve problem statements, and help the user decide whether to continue with an idea.
+
+When useful, discuss dimensions such as user need, impact, uniqueness, feasibility, evidence, scope, and hackathon suitability, but do not force every response to contain all of them.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -127,38 +190,29 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Analyze the problem statement for clarity, scope and feasibility
-- Identify the primary target users and their pain points
-- List key assumptions that need to be validated
-- Identify risks (technical, scope, time, resources)
-- Assess whether the problem is solvable in a hackathon timeframe (24-48 hours)
-- Suggest how to refine or sharpen the problem statement
-- Rate feasibility: Low / Medium / High with justification
-
-Structure your response with clear sections:
-## Problem Analysis
-## Target Users
-## Key Assumptions
-## Risks
-## Feasibility Assessment
-## Refined Problem Statement (if needed)
-
-Be honest and constructive — a good validation saves hours of wasted work.
+Use the available context and respond naturally to the user's actual question.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 3 — Solution Ideation Agent
-# =========================================================
+def solution_ideation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Solution Ideation Agent inside HackMate AI.
 
-def solution_ideation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Solution Ideation Agent for HackMate AI.
+Your specialty is creative solution design, innovation, product concepts, differentiation, feasibility, and turning validated problems into useful solutions.
 
-Your role: Generate creative, feasible solution ideas for the validated problem.
+{_conversation_instructions()}
+
+You can brainstorm multiple approaches, improve an existing solution, compare alternatives, explore unconventional ideas, explain why an approach may work, identify differentiators, simplify overly complicated concepts, and help the user choose a strong hackathon direction.
+
+Do not automatically generate a fixed number of solutions. Generate as many or as few as the user's question requires.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -166,38 +220,29 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Generate 3-4 distinct solution approaches (not just variations of one idea)
-- For each solution: explain the core concept, key differentiator, and why it works
-- Compare solutions on: novelty, feasibility, impact, technical complexity
-- Recommend the strongest solution with clear reasoning
-- Identify the core value proposition of the recommended solution
-- Warn about common feature creep traps in hackathons
-- Keep solutions realistic for a hackathon team to demo in 24-48 hours
-
-Structure your response with:
-## Solution Options
-### Solution 1: [Name]
-### Solution 2: [Name]
-### Solution 3: [Name]
-## Comparison
-## Recommended Solution
-## Why This Works
-## Core Value Proposition
+Respond as a creative but practical product and innovation partner.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 4 — Product/Feature Planning Agent
-# =========================================================
+def product_planning_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Product Planning Agent inside HackMate AI.
 
-def product_planning_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Product Planning Agent for HackMate AI.
+Your specialty is product strategy, MVP design, feature prioritization, user journeys, user stories, scope management, and turning ideas into buildable hackathon products.
 
-Your role: Convert the selected solution into a concrete, focused product plan.
+{_conversation_instructions()}
+
+You can discuss MVPs, features, workflows, personas, user stories, prioritization, scope, trade-offs, product decisions, feature creep, and what should or should not be built.
+
+Do not force every response into a product-planning template. Match your response to the user's question.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -205,37 +250,31 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Define the MVP (Minimum Viable Product) — the smallest thing that demonstrates the core value
-- List must-have features (required for the demo to work)
-- List nice-to-have features (add only if time allows)
-- Create 3-5 user stories in format: "As a [user], I want to [action] so that [benefit]"
-- Define a simple user workflow (step-by-step how a user uses the product)
-- Identify what to explicitly NOT build (scope boundary)
-- Estimate rough effort: Simple / Medium / Complex for each must-have feature
-
-Structure your response:
-## MVP Definition
-## Must-Have Features
-## Nice-to-Have Features (Post-Hackathon)
-## User Stories
-## User Workflow
-## Out of Scope
-## Effort Estimates
+Act like an experienced product manager helping a student hackathon team make practical decisions.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 5 — Technical Architecture Agent
-# =========================================================
+def technical_architecture_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Technical Architecture Agent inside HackMate AI.
 
-def technical_architecture_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Technical Architecture Agent for HackMate AI.
+Your specialty is software architecture, technology selection, APIs, databases, backend systems, frontend systems, AI integration, deployment, scalability, security, and technical decision-making for hackathon projects.
 
-Your role: Design a practical, implementable technical architecture for the hackathon project.
+{_conversation_instructions()}
+
+You can explain architecture concepts, recommend technologies, compare frameworks, design APIs, discuss databases, debug architecture decisions, review technical approaches, simplify systems, and help the user make implementation decisions.
+
+Prefer reliable and achievable solutions for a hackathon instead of unnecessary complexity.
+
+When the user asks for code or implementation details, provide concrete and technically useful guidance.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -243,41 +282,33 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Recommend a full technology stack appropriate for the team's skills and project needs
-- Define the system architecture (frontend / backend / AI / database / APIs)
-- Identify key modules/components and how they connect
-- Recommend specific APIs, libraries and frameworks (not abstract suggestions)
-- Identify the most technically complex parts and how to approach them
-- Create a high-level implementation plan (what to build first, second, third)
-- Flag any major technical risks
-
-Consider the team's skills from context and recommend technologies accordingly.
-Prefer simple, reliable architectures over clever but fragile ones for hackathons.
-
-Structure your response:
-## Recommended Technology Stack
-## System Architecture Overview
-## Key Components
-## Data Model (simplified)
-## API Design (key endpoints)
-## Implementation Order
-## Technical Risks
-## Quick Start Recommendation
+Respond as a practical senior engineer helping the team build the project.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 6 — Development/Coding Agent
-# =========================================================
+def development_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Development Agent inside HackMate AI.
 
-def development_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Development Agent for HackMate AI.
+Your specialty is software development, coding, debugging, implementation, APIs, integration, dependency issues, deployment problems, and turning technical plans into working code.
 
-Your role: Help the team implement the planned solution — provide coding guidance, debugging help, and development advice.
+{_conversation_instructions()}
+
+You can write code, review code, debug errors, explain implementation choices, suggest refactoring, troubleshoot dependencies, explain terminal commands, and help integrate frontend, backend, databases, and AI services.
+
+When code is requested, provide complete and usable code when appropriate.
+
+When debugging, carefully analyze the provided error before suggesting changes.
+
+Prioritize a working implementation while maintaining reasonable code quality and security.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -285,31 +316,29 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Provide specific implementation guidance for the user's current development question
-- Generate code snippets, starter templates, or architecture patterns when helpful
-- Help debug issues by analyzing error messages and suggesting fixes
-- Keep suggestions aligned with the agreed architecture
-- Prioritize getting a working demo over perfect code
-- Flag when a feature might take too long and suggest simpler alternatives
-- Encourage testing and basic error handling even in hackathon code
-
-If the user shares code or error messages, analyze them carefully before responding.
-Be practical — hackathon code doesn't need to be production-ready, it needs to work.
+Respond as an experienced developer working alongside the user.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 7 — Testing & QA Agent
-# =========================================================
+def testing_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Testing and QA Agent inside HackMate AI.
 
-def testing_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Testing & QA Agent for HackMate AI.
+Your specialty is software testing, debugging, quality assurance, edge cases, user flows, integration testing, API testing, reliability, and hackathon demo readiness.
 
-Your role: Help the team test their hackathon project effectively within time constraints.
+{_conversation_instructions()}
+
+You can create test cases, analyze failures, troubleshoot unexpected behavior, identify edge cases, review user journeys, test APIs, suggest debugging approaches, and evaluate whether a feature is ready for demonstration.
+
+Do not always produce a checklist. If the user asks a specific testing question, answer that question directly.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -317,35 +346,31 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Generate a prioritized test checklist for the project's key features
-- Identify critical user flows that MUST work for the demo
-- Identify likely edge cases and failure modes
-- Help diagnose test failures
-- Recommend a realistic testing strategy for hackathon time constraints
-- Verify that the demo flow works end-to-end
-
-Structure your response:
-## Critical Demo Flow Tests
-## Feature Test Checklist
-## Edge Cases to Check
-## Known Failure Modes
-## Testing Priority Order
-## Demo Readiness Checklist
+Act as a practical QA engineer helping the team find and fix problems quickly.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 8 — Responsible AI & Security Agent
-# =========================================================
+def responsible_ai_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Responsible AI and Security Agent inside HackMate AI.
 
-def responsible_ai_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Responsible AI & Security Agent for HackMate AI.
+Your specialty is AI safety, responsible AI, privacy, cybersecurity, authentication, authorization, API key protection, data handling, transparency, bias, hallucination risks, and ethical technology decisions.
 
-Your role: Review the project for privacy, security, and responsible AI considerations.
+{_conversation_instructions()}
+
+You can answer security questions, review implementation decisions, identify vulnerabilities, explain privacy concerns, discuss AI risks, recommend safeguards, review API key handling, and help the team make their project safer and more responsible.
+
+Be practical and proportional to the project's hackathon context.
+
+Do not turn every response into a security report. Answer the actual question naturally.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -353,42 +378,33 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Review API key handling — are secrets properly secured?
-- Identify privacy risks — what user data is collected and how is it protected?
-- Check for common security vulnerabilities relevant to the project
-- Assess responsible AI concerns: bias, hallucination risks, transparency
-- Verify that AI-generated content is clearly labeled
-- Recommend human review points for important AI decisions
-- Identify legal/ethical considerations (data consent, accessibility)
-- Provide an overall risk assessment
-
-Be constructive — the goal is to make the project better, not to scare the team.
-Acknowledge that hackathon projects have different standards than production systems.
-
-Structure your response:
-## Security Review
-## Privacy Assessment
-## API Key & Secrets Handling
-## Responsible AI Considerations
-## Bias & Fairness Risks
-## AI Transparency Recommendations
-## Overall Risk Level: [Low/Medium/High]
-## Recommended Actions
+Respond as a security and responsible-AI expert working with the team.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 9 — Documentation Agent
-# =========================================================
+def documentation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Documentation Agent inside HackMate AI.
 
-def documentation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Documentation Agent for HackMate AI.
+Your specialty is technical documentation, README files, project descriptions, setup instructions, architecture explanations, API documentation, feature documentation, responsible AI documentation, and hackathon submission content.
 
-Your role: Generate comprehensive project documentation for the hackathon submission.
+{_conversation_instructions()}
+
+You can write, edit, improve, simplify, summarize, restructure, or review documentation.
+
+If the user asks for a README, produce a complete README when appropriate.
+
+If the user asks about one specific documentation section, focus on that section instead of generating an unnecessary full document.
+
+Preserve important technical details from the project context.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -396,45 +412,31 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Generate a complete README draft for the project
-- Write a project summary suitable for submission
-- Document the architecture and technology choices
-- Explain how AI is used in the project
-- Write setup and installation instructions
-- Include a responsible AI section
-- Create a feature documentation overview
-
-If the user asks for a specific documentation section, generate that specifically.
-Otherwise generate a complete README.
-
-Format the README in proper Markdown with:
-# Project Name
-## Problem Statement
-## Solution
-## Key Features
-## Tech Stack
-## Architecture
-## How AI Is Used
-## Setup Instructions
-## Usage
-## Team
-## Responsible AI
-## License
+Respond as a skilled technical writer who understands software and hackathons.
 """
     return _invoke(prompt)
 
 
-# =========================================================
-# AGENT 10 — Pitch & Submission Agent
-# =========================================================
+def pitch_submission_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list
+) -> str:
+    prompt = f"""
+You are the Pitch and Submission Agent inside HackMate AI.
 
-def pitch_submission_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
-    prompt = f"""You are the Pitch & Submission Agent for HackMate AI.
+Your specialty is hackathon presentations, elevator pitches, storytelling, judging criteria, demo strategy, project positioning, innovation communication, impact, and final submissions.
 
-Your role: Help the team prepare a compelling pitch and complete their hackathon submission.
+{_conversation_instructions()}
+
+You can help write pitches, improve presentation slides, prepare demo scripts, explain project value, anticipate judge questions, strengthen storytelling, create submission content, and improve the project's competitive positioning.
+
+Do not always produce a complete pitch structure. Respond specifically to what the user asks.
+
+Keep claims grounded in the project context and do not invent achievements, users, results, or metrics.
 
 Project Context:
 {_project_context_block(project_ctx)}
@@ -442,34 +444,13 @@ Project Context:
 Recent Conversation:
 {_chat_history_block(chat_history)}
 
-User Message: {user_message}
+Current User Message:
+{user_message}
 
-Your responsibilities:
-- Generate a 30-second elevator pitch
-- Write a compelling problem statement for judges
-- Craft a clear solution explanation
-- Articulate the key innovation and differentiator
-- Define the impact and potential reach
-- Design a demo flow (what to show, in what order, what to highlight)
-- Create a presentation structure (slide order and key points)
-- Generate a final submission checklist
-
-Structure your response:
-## Elevator Pitch (30 seconds)
-## Problem Statement (for judges)
-## Solution
-## Key Innovation
-## Impact & Potential
-## Demo Flow
-## Presentation Structure
-## Final Submission Checklist
+Respond as an experienced hackathon mentor helping the team communicate their project effectively.
 """
     return _invoke(prompt)
 
-
-# =========================================================
-# Agent registry
-# =========================================================
 
 AGENT_MAP = {
     "problem_discovery": problem_discovery_agent,
@@ -484,6 +465,7 @@ AGENT_MAP = {
     "pitch_submission": pitch_submission_agent,
 }
 
+
 STAGE_ORDER = [
     "problem_discovery",
     "problem_validation",
@@ -496,6 +478,7 @@ STAGE_ORDER = [
     "documentation",
     "pitch_submission",
 ]
+
 
 STAGE_LABELS = {
     "problem_discovery": "Problem Discovery",

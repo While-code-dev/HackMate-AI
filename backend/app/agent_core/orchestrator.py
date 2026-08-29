@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 
 from app.agent_core.sub_agents import (
     extract_profile_agent,
@@ -10,39 +10,29 @@ from app.agent_core.sub_agents import (
 )
 
 
-# --------------------------------------------------
-# Load environment variables
-# --------------------------------------------------
-
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 env_path = BASE_DIR / ".env"
 
 load_dotenv(dotenv_path=env_path)
 
+api_key = os.getenv("GROQ_API_KEY")
 
-# --------------------------------------------------
-# Gemini API key
-# --------------------------------------------------
-
-api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-
-# --------------------------------------------------
-# Master Orchestrator (legacy — kept for backward compat)
-# --------------------------------------------------
 
 class MasterOrchestrator:
 
     def __init__(self):
 
-        if not api_key:
+        current_api_key = os.getenv("GROQ_API_KEY") or api_key
+
+        if not current_api_key:
             raise ValueError(
-                f"Gemini API key not found. Check your .env file at: {env_path}"
+                f"Groq API key not found. Check your .env file at: {env_path}"
             )
 
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-3.6-flash",
-            google_api_key=api_key,
+        self.llm = ChatGroq(
+            model="openai/gpt-oss-20b",
+            groq_api_key=current_api_key,
+            temperature=0.7,
             timeout=120,
         )
 
@@ -52,7 +42,6 @@ class MasterOrchestrator:
         history: list,
     ) -> dict:
 
-        # Add current user message to history
         full_history = history + [
             {
                 "role": "user",
@@ -60,15 +49,7 @@ class MasterOrchestrator:
             }
         ]
 
-        # ------------------------------------------
-        # Extract student profile
-        # ------------------------------------------
-
         profile = extract_profile_agent(full_history)
-
-        # ------------------------------------------
-        # Check missing information
-        # ------------------------------------------
 
         missing = []
 
@@ -83,25 +64,41 @@ class MasterOrchestrator:
                 "(Beginner, Intermediate, or Advanced)"
             )
 
-        # ------------------------------------------
-        # Ask for missing information
-        # ------------------------------------------
-
         if missing:
 
-            prompt = (
-                "The user is asking about hackathon ideas. "
-                "Briefly and naturally ask them about: "
-                + ", ".join(missing)
-                + "."
-            )
+            prompt = f"""You are the HackMate AI Master Orchestrator.
+
+Have a natural conversation with the user about their hackathon project.
+
+The user has not provided enough information yet.
+
+You need to naturally ask about:
+{", ".join(missing)}
+
+Do not use a rigid questionnaire.
+
+Do not ask unnecessary questions.
+
+Use the existing conversation context.
+
+If the user has already answered part of this information, do not ask for it again.
+
+Respond naturally like a modern conversational AI assistant.
+
+Conversation:
+{full_history}
+"""
 
             response = self.llm.invoke(prompt)
+
             content = response.content
+
             if isinstance(content, list):
                 content = "".join(
-                    b.get("text", "") if isinstance(b, dict) else str(b)
-                    for b in content
+                    block.get("text", "")
+                    if isinstance(block, dict)
+                    else str(block)
+                    for block in content
                 )
 
             return {
@@ -109,10 +106,6 @@ class MasterOrchestrator:
                 "is_ready_for_spec": False,
                 "project_spec": None,
             }
-
-        # ------------------------------------------
-        # Generate project specification
-        # ------------------------------------------
 
         canvas_spec = generate_canvas_spec_agent(profile)
 
