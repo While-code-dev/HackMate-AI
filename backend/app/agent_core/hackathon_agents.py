@@ -14,15 +14,43 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Load .env
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+# =========================================================
+# Environment / Gemini configuration
+# =========================================================
+
+# hackathon_agents.py:
+# backend/app/agent_core/hackathon_agents.py
+#
+# parents[0] = backend/app/agent_core
+# parents[1] = backend/app
+# parents[2] = backend
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+# Load backend/.env
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
+# Gemini API key
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 def _llm(timeout: int = 90) -> ChatGoogleGenerativeAI:
-    """Create a fresh LLM instance (intentional per-call pattern)."""
+    """
+    Create a fresh Gemini LLM instance.
+
+    The API key is read from:
+        GEMINI_API_KEY
+    or:
+        GOOGLE_API_KEY
+    """
+
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not configured. "
+            "Make sure GEMINI_API_KEY exists in backend/.env "
+            "or in the deployment environment variables."
+        )
+
     return ChatGoogleGenerativeAI(
         model="gemini-3.6-flash",
         google_api_key=api_key,
@@ -31,52 +59,85 @@ def _llm(timeout: int = 90) -> ChatGoogleGenerativeAI:
 
 
 def _invoke(prompt: str, timeout: int = 90) -> str:
-    """Invoke the LLM and return a plain string, handling list content from newer SDK."""
+    """
+    Invoke Gemini and return a plain string.
+
+    Handles both normal string content and list-based content
+    returned by newer LangChain / Gemini integrations.
+    """
+
     result = _llm(timeout).invoke(prompt)
     content = result.content
+
     if isinstance(content, list):
-        # langchain_google_genai >= 4.x returns list of content blocks
         parts = []
+
         for block in content:
             if isinstance(block, dict):
                 parts.append(block.get("text", ""))
             else:
                 parts.append(str(block))
+
         return "".join(parts)
+
     return str(content)
 
 
 def _project_context_block(ctx: dict) -> str:
     """Format a project context dict into a readable block for prompts."""
+
     lines = []
+
     if ctx.get("project_name"):
         lines.append(f"Project Name: {ctx['project_name']}")
+
     if ctx.get("hackathon_name"):
         lines.append(f"Hackathon: {ctx['hackathon_name']}")
+
     if ctx.get("theme"):
         lines.append(f"Theme/Problem Area: {ctx['theme']}")
+
     if ctx.get("interests"):
         lines.append(f"Interests: {ctx['interests']}")
+
     if ctx.get("skills"):
         lines.append(f"Skills: {ctx['skills']}")
+
     if ctx.get("team_info"):
         lines.append(f"Team Info: {ctx['team_info']}")
+
     if ctx.get("constraints"):
         lines.append(f"Constraints: {ctx['constraints']}")
+
     if ctx.get("stage_outputs"):
         for stage, output in ctx["stage_outputs"].items():
             if output:
-                lines.append(f"\n[{stage.upper()} OUTPUT]:\n{output}")
+                lines.append(
+                    f"\n[{stage.upper()} OUTPUT]:\n{output}"
+                )
+
     return "\n".join(lines) if lines else "(No project context yet)"
 
 
 def _chat_history_block(history: list) -> str:
+    """Format recent conversation history for the agent."""
+
     if not history:
         return ""
+
     parts = []
-    for msg in history[-10:]:  # Last 10 messages for context
-        role = "User" if msg.get("role") == "user" else "Assistant"
-        parts.append(f"{role}: {msg.get('content', '')}")
+
+    for msg in history[-10:]:
+        role = (
+            "User"
+            if msg.get("role") == "user"
+            else "Assistant"
+        )
+
+        parts.append(
+            f"{role}: {msg.get('content', '')}"
+        )
+
     return "\n".join(parts)
 
 
@@ -84,7 +145,12 @@ def _chat_history_block(history: list) -> str:
 # AGENT 1 — Problem Discovery Agent
 # =========================================================
 
-def problem_discovery_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def problem_discovery_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Problem Discovery Agent for HackMate AI — an AI-powered hackathon copilot.
 
 Your role: Help the user discover meaningful, impactful problems they can solve at a hackathon.
@@ -107,8 +173,10 @@ Your responsibilities:
 - Keep responses focused and actionable for a hackathon timeframe
 
 If the user has already provided context, use it. Don't re-ask for information already known.
+
 Respond in a friendly, encouraging tone appropriate for student hackathon participants.
 """
+
     return _invoke(prompt)
 
 
@@ -116,7 +184,12 @@ Respond in a friendly, encouraging tone appropriate for student hackathon partic
 # AGENT 2 — Problem Validation Agent
 # =========================================================
 
-def problem_validation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def problem_validation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Problem Validation Agent for HackMate AI.
 
 Your role: Validate whether the selected problem is meaningful, realistic and worth solving at a hackathon.
@@ -139,6 +212,7 @@ Your responsibilities:
 - Rate feasibility: Low / Medium / High with justification
 
 Structure your response with clear sections:
+
 ## Problem Analysis
 ## Target Users
 ## Key Assumptions
@@ -148,6 +222,7 @@ Structure your response with clear sections:
 
 Be honest and constructive — a good validation saves hours of wasted work.
 """
+
     return _invoke(prompt)
 
 
@@ -155,7 +230,12 @@ Be honest and constructive — a good validation saves hours of wasted work.
 # AGENT 3 — Solution Ideation Agent
 # =========================================================
 
-def solution_ideation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def solution_ideation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Solution Ideation Agent for HackMate AI.
 
 Your role: Generate creative, feasible solution ideas for the validated problem.
@@ -178,15 +258,18 @@ Your responsibilities:
 - Keep solutions realistic for a hackathon team to demo in 24-48 hours
 
 Structure your response with:
+
 ## Solution Options
 ### Solution 1: [Name]
 ### Solution 2: [Name]
 ### Solution 3: [Name]
+
 ## Comparison
 ## Recommended Solution
 ## Why This Works
 ## Core Value Proposition
 """
+
     return _invoke(prompt)
 
 
@@ -194,7 +277,12 @@ Structure your response with:
 # AGENT 4 — Product/Feature Planning Agent
 # =========================================================
 
-def product_planning_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def product_planning_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Product Planning Agent for HackMate AI.
 
 Your role: Convert the selected solution into a concrete, focused product plan.
@@ -217,6 +305,7 @@ Your responsibilities:
 - Estimate rough effort: Simple / Medium / Complex for each must-have feature
 
 Structure your response:
+
 ## MVP Definition
 ## Must-Have Features
 ## Nice-to-Have Features (Post-Hackathon)
@@ -225,6 +314,7 @@ Structure your response:
 ## Out of Scope
 ## Effort Estimates
 """
+
     return _invoke(prompt)
 
 
@@ -232,7 +322,12 @@ Structure your response:
 # AGENT 5 — Technical Architecture Agent
 # =========================================================
 
-def technical_architecture_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def technical_architecture_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Technical Architecture Agent for HackMate AI.
 
 Your role: Design a practical, implementable technical architecture for the hackathon project.
@@ -255,9 +350,11 @@ Your responsibilities:
 - Flag any major technical risks
 
 Consider the team's skills from context and recommend technologies accordingly.
+
 Prefer simple, reliable architectures over clever but fragile ones for hackathons.
 
 Structure your response:
+
 ## Recommended Technology Stack
 ## System Architecture Overview
 ## Key Components
@@ -267,6 +364,7 @@ Structure your response:
 ## Technical Risks
 ## Quick Start Recommendation
 """
+
     return _invoke(prompt)
 
 
@@ -274,7 +372,12 @@ Structure your response:
 # AGENT 6 — Development/Coding Agent
 # =========================================================
 
-def development_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def development_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Development Agent for HackMate AI.
 
 Your role: Help the team implement the planned solution — provide coding guidance, debugging help, and development advice.
@@ -297,8 +400,10 @@ Your responsibilities:
 - Encourage testing and basic error handling even in hackathon code
 
 If the user shares code or error messages, analyze them carefully before responding.
+
 Be practical — hackathon code doesn't need to be production-ready, it needs to work.
 """
+
     return _invoke(prompt)
 
 
@@ -306,7 +411,12 @@ Be practical — hackathon code doesn't need to be production-ready, it needs to
 # AGENT 7 — Testing & QA Agent
 # =========================================================
 
-def testing_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def testing_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Testing & QA Agent for HackMate AI.
 
 Your role: Help the team test their hackathon project effectively within time constraints.
@@ -328,6 +438,7 @@ Your responsibilities:
 - Verify that the demo flow works end-to-end
 
 Structure your response:
+
 ## Critical Demo Flow Tests
 ## Feature Test Checklist
 ## Edge Cases to Check
@@ -335,6 +446,7 @@ Structure your response:
 ## Testing Priority Order
 ## Demo Readiness Checklist
 """
+
     return _invoke(prompt)
 
 
@@ -342,7 +454,12 @@ Structure your response:
 # AGENT 8 — Responsible AI & Security Agent
 # =========================================================
 
-def responsible_ai_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def responsible_ai_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Responsible AI & Security Agent for HackMate AI.
 
 Your role: Review the project for privacy, security, and responsible AI considerations.
@@ -366,9 +483,11 @@ Your responsibilities:
 - Provide an overall risk assessment
 
 Be constructive — the goal is to make the project better, not to scare the team.
+
 Acknowledge that hackathon projects have different standards than production systems.
 
 Structure your response:
+
 ## Security Review
 ## Privacy Assessment
 ## API Key & Secrets Handling
@@ -378,6 +497,7 @@ Structure your response:
 ## Overall Risk Level: [Low/Medium/High]
 ## Recommended Actions
 """
+
     return _invoke(prompt)
 
 
@@ -385,7 +505,12 @@ Structure your response:
 # AGENT 9 — Documentation Agent
 # =========================================================
 
-def documentation_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def documentation_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Documentation Agent for HackMate AI.
 
 Your role: Generate comprehensive project documentation for the hackathon submission.
@@ -411,6 +536,7 @@ If the user asks for a specific documentation section, generate that specificall
 Otherwise generate a complete README.
 
 Format the README in proper Markdown with:
+
 # Project Name
 ## Problem Statement
 ## Solution
@@ -424,6 +550,7 @@ Format the README in proper Markdown with:
 ## Responsible AI
 ## License
 """
+
     return _invoke(prompt)
 
 
@@ -431,7 +558,12 @@ Format the README in proper Markdown with:
 # AGENT 10 — Pitch & Submission Agent
 # =========================================================
 
-def pitch_submission_agent(user_message: str, project_ctx: dict, chat_history: list) -> str:
+def pitch_submission_agent(
+    user_message: str,
+    project_ctx: dict,
+    chat_history: list,
+) -> str:
+
     prompt = f"""You are the Pitch & Submission Agent for HackMate AI.
 
 Your role: Help the team prepare a compelling pitch and complete their hackathon submission.
@@ -455,6 +587,7 @@ Your responsibilities:
 - Generate a final submission checklist
 
 Structure your response:
+
 ## Elevator Pitch (30 seconds)
 ## Problem Statement (for judges)
 ## Solution
@@ -464,6 +597,7 @@ Structure your response:
 ## Presentation Structure
 ## Final Submission Checklist
 """
+
     return _invoke(prompt)
 
 
@@ -484,6 +618,7 @@ AGENT_MAP = {
     "pitch_submission": pitch_submission_agent,
 }
 
+
 STAGE_ORDER = [
     "problem_discovery",
     "problem_validation",
@@ -496,6 +631,7 @@ STAGE_ORDER = [
     "documentation",
     "pitch_submission",
 ]
+
 
 STAGE_LABELS = {
     "problem_discovery": "Problem Discovery",
